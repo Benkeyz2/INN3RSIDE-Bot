@@ -140,7 +140,7 @@ export default {
             components: [row1, row2]
         });
 
-        // Save raid
+        // ========== STRONGER SAVING ==========
         const raidData = {
             raidId,
             tweetUrl,
@@ -156,11 +156,19 @@ export default {
             createdAt: Date.now()
         };
 
+        // Save with guild key
         await interaction.client.db.set(`guild:\( {interaction.guild.id}:raids: \){raidId}`, raidData);
 
-        const activeRaids = await interaction.client.db.get(`guild:${interaction.guild.id}:active_raids`, []);
+        // Backup save
+        await interaction.client.db.set(`raids:${raidId}`, raidData);
+
+        // Save to active list
+        const activeKey = `guild:${interaction.guild.id}:active_raids`;
+        let activeRaids = await interaction.client.db.get(activeKey, []);
+        if (!Array.isArray(activeRaids)) activeRaids = [];
         activeRaids.push(raidId);
-        await interaction.client.db.set(`guild:${interaction.guild.id}:active_raids`, activeRaids);
+        await interaction.client.db.set(activeKey, activeRaids);
+        // ========== END SAVING ==========
 
         await InteractionHelper.safeEditReply(interaction, {
             embeds: [successEmbed('Raid Started!', `Raid is now live in \( {interaction.channel}.\nIt will close <t: \){Math.floor(endsAt / 1000)}:R>.`)]
