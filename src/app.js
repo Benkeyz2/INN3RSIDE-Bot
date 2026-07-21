@@ -1,4 +1,4 @@
-﻿import 'dotenv/config';
+import 'dotenv/config';
 import { Client, Collection, GatewayIntentBits } from 'discord.js';
 import { REST } from '@discordjs/rest';
 import express from 'express';
@@ -22,17 +22,13 @@ class TitanBot extends Client {
   constructor() {
     super({
       intents: [
-        
         GatewayIntentBits.Guilds,                        
         GatewayIntentBits.GuildMembers,                 
-
         GatewayIntentBits.GuildMessages,                
         GatewayIntentBits.GuildMessageReactions,        
         GatewayIntentBits.MessageContent,               
         GatewayIntentBits.DirectMessages,
-
         GatewayIntentBits.GuildVoiceStates,             
-
         GatewayIntentBits.GuildBans,                    
       ],
     });
@@ -156,6 +152,126 @@ class TitanBot extends Client {
       next();
     });
 
+    // ==================== REAL X OAUTH CALLBACK (ORIGINS STYLE) ====================
+    app.get('/callback', async (req, res) => {
+      try {
+        const { code, state } = req.query;
+
+        if (!code || !state) {
+          return res.send(`
+            <h1 style="color:white;background:#0f0f0f;padding:40px;font-family:Arial">Error</h1>
+            <p style="color:#ccc;background:#0f0f0f;padding:20px;font-family:Arial">Missing code or state. Please try /link-x again from Discord.</p>
+          `);
+        }
+
+        const stateData = await this.db.get(`oauth_state:${state}`);
+        if (!stateData) {
+          return res.send(`
+            <h1 style="color:white;background:#0f0f0f;padding:40px;font-family:Arial">Session Expired</h1>
+            <p style="color:#ccc;background:#0f0f0f;padding:20px;font-family:Arial">Please go back to Discord and run /link-x again.</p>
+          `);
+        }
+
+        const { discordId, guildId } = stateData;
+
+        const credentials = Buffer.from(
+          `${process.env.X_CLIENT_ID}:${process.env.X_CLIENT_SECRET}`
+        ).toString('base64');
+
+        const tokenResponse = await fetch('https://api.twitter.com/2/oauth2/token', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': `Basic ${credentials}`
+          },
+          body: new URLSearchParams({
+            code: code,
+            grant_type: 'authorization_code',
+            redirect_uri: process.env.X_CALLBACK_URL,
+            code_verifier: 'challenge'
+          })
+        });
+
+        const tokenData = await tokenResponse.json();
+
+        if (!tokenData.access_token) {
+          console.error('Token error:', tokenData);
+          return res.send(`
+            <h1 style="color:white;background:#0f0f0f;padding:40px;font-family:Arial">Authorization Failed</h1>
+            <p style="color:#ccc;background:#0f0f0f;padding:20px;font-family:Arial">Could not get access token. Please try again.</p>
+          `);
+        }
+
+        const userResponse = await fetch('https://api.twitter.com/2/users/me', {
+          headers: {
+            'Authorization': `Bearer ${tokenData.access_token}`
+          }
+        });
+
+        const userData = await userResponse.json();
+        const xUser = userData.data;
+
+        if (!xUser) {
+          return res.send(`
+            <h1 style="color:white;background:#0f0f0f;padding:40px;font-family:Arial">Error</h1>
+            <p style="color:#ccc;background:#0f0f0f;padding:20px;font-family:Arial">Could not fetch your X profile.</p>
+          `);
+        }
+
+        const linkData = {
+          discordId,
+          guildId,
+          xId: xUser.id,
+          xUsername: xUser.username,
+          xName: xUser.name,
+          accessToken: tokenData.access_token,
+          refreshToken: tokenData.refresh_token || null,
+          expiresAt: Date.now() + (tokenData.expires_in * 1000),
+          linkedAt: Date.now()
+        };
+
+        await this.db.set(`xlink:${discordId}`, linkData);
+        await this.db.set(`xuser_${discordId}`, xUser.username);
+        await this.db.set(`guild:${guildId}:xlink:${discordId}`, linkData);
+
+        await this.db.delete(`oauth_state:${state}`);
+
+        res.send(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>X Linked Successfully - inn3rside</title>
+            <style>
+              body { font-family: Arial, sans-serif; background: #0f0f0f; color: white; text-align: center; padding: 60px 20px; margin: 0; }
+              .box { background: #1a1a1a; padding: 40px; border-radius: 16px; max-width: 480px; margin: 0 auto; border: 1px solid #333; }
+              h1 { color: #1DA1F2; margin-bottom: 16px; }
+              p { color: #ccc; line-height: 1.6; margin: 10px 0; }
+              .btn { background: #1DA1F2; color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; display: inline-block; margin-top: 25px; font-weight: bold; }
+            </style>
+          </head>
+          <body>
+            <div class="box">
+              <h1>✅ Successfully Linked!</h1>
+              <p>Your X account <strong>@${xUser.username}</strong> has been linked to Discord.</p>
+              <p>You can now close this page and go back to Discord.</p>
+              <p>Click <strong>Verify my engagement</strong> on the raid to earn points.</p>
+              <a class="btn" href="https://discord.com/channels/@me">Return to Discord</a>
+            </div>
+          </body>
+          </html>
+        `);
+
+        console.log(`[X OAuth] Successfully linked @${xUser.username} → Discord ${discordId}`);
+      } catch (error) {
+        console.error('OAuth Callback Error:', error);
+        res.send(`
+          <h1 style="color:white;background:#0f0f0f;padding:40px;font-family:Arial">Error</h1>
+          <p style="color:#ccc;background:#0f0f0f;padding:20px;font-family:Arial">Something went wrong. Please try /link-x again.</p>
+        `);
+      }
+    });
+    // ==================== END X OAUTH CALLBACK ====================
+
     app.get('/health', (req, res) => {
       const dbStatus = this.db?.getStatus?.() || { isDegraded: 'unknown' };
       const status = {
@@ -227,7 +343,7 @@ class TitanBot extends Client {
         if (!hasStartedListening && errorCode === 'EADDRINUSE' && attempt < maxPortRetryAttempts) {
           const nextPort = port + 1;
           startupLog(`Port ${port} is already in use. Trying port ${nextPort}...`);
-          setTimeout(() => startServer(nextPort, attempt + 1), 250);
+          setTimeout(() ent => startServer(nextPort, attempt + 1), 250);
           return;
         }
 
@@ -278,8 +394,6 @@ class TitanBot extends Client {
           }
         }
         
-        // Save cleaned counters if any were orphaned
-        // Save cleaned counters if any were orphaned
         if (orphanedCounters.length > 0) {
           await saveServerCounters(this, guildId, validCounters);
           logger.info(`Cleaned up ${orphanedCounters.length} orphaned counter(s) from guild ${guildId} during scheduled update`);
@@ -337,7 +451,6 @@ class TitanBot extends Client {
     logger.info(`${'='.repeat(60)}`);
 
     try {
-      
       logger.info('Stopping cron jobs...');
       cron.getTasks().forEach(task => task.stop());
       logger.info('✅ Cron jobs stopped');
@@ -352,8 +465,6 @@ class TitanBot extends Client {
         logger.info('✅ Web server closed');
       }
 
-      // Close database connection
-      // Close database connection
       if (this.db && this.db.db) {
         logger.info('Closing database connection...');
         try {
@@ -372,13 +483,12 @@ class TitanBot extends Client {
           this.destroy();
           logger.info('✅ Discord client destroyed');
         } catch (error) {
-
           logger.warn('Discord client destroy warning (non-critical):', error.message);
         }
       }
 
       logger.info('✅ Graceful shutdown complete');
-  shutdownLog('Bot stopped successfully.');
+      shutdownLog('Bot stopped successfully.');
       process.exit(0);
     } catch (error) {
       logger.error('Error during graceful shutdown:', error);
@@ -395,11 +505,9 @@ try {
     process.on('SIGINT', () => bot.shutdown('SIGINT'));
     
     process.on('uncaughtException', (error) => {
-      // Process state may be corrupt after an uncaught throw; log and shut down cleanly.
       handleTaskError('uncaught_exception', error, { fatal: true });
       bot.shutdown('UNCAUGHT_EXCEPTION');
     });
-
     process.on('unhandledRejection', (reason) => {
       const code = reason?.code;
       if (code === 10062 || code === 40060 || code === 50027) {
@@ -409,9 +517,6 @@ try {
       if (reason?.message?.includes('Queue is empty')) {
         return;
       }
-
-      // A stray rejection is a bug to fix, not a reason to take the bot down.
-      // Log loudly with full context; the central task handler categorizes it.
       handleTaskError('unhandled_rejection', reason instanceof Error ? reason : new Error(String(reason)), {
         errorCode: ErrorCodes.UNHANDLED_REJECTION,
       });
