@@ -343,7 +343,7 @@ class TitanBot extends Client {
         if (!hasStartedListening && errorCode === 'EADDRINUSE' && attempt < maxPortRetryAttempts) {
           const nextPort = port + 1;
           startupLog(`Port ${port} is already in use. Trying port ${nextPort}...`);
-          setTimeout(() ent => startServer(nextPort, attempt + 1), 250);
+          setTimeout(() => startServer(nextPort, attempt + 1), 250);
           return;
         }
 
