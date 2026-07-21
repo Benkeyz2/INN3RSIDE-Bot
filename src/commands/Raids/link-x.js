@@ -1,63 +1,61 @@
-import { SlashCommandBuilder } from 'discord.js';
+import { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { successEmbed, errorEmbed } from '../../utils/embeds.js';
 import { withErrorHandling } from '../../utils/errorHandler.js';
 import { InteractionHelper } from '../../utils/interactionHelper.js';
 import { logger } from '../../utils/logger.js';
+import crypto from 'crypto';
 
 export default {
     slashOnly: true,
     data: new SlashCommandBuilder()
         .setName('link-x')
-        .setDescription('Link your X (Twitter) account for raids')
-        .addStringOption(opt =>
-            opt.setName('username')
-                .setDescription('Your X username (without @)')
-                .setRequired(true)
-        ),
+        .setDescription('Link your X account (real OAuth like Origins)'),
 
     category: 'Raids',
 
     execute: withErrorHandling(async (interaction) => {
         await InteractionHelper.safeDefer(interaction, { flags: ['Ephemeral'] });
 
-        const username = interaction.options.getString('username').replace('@', '').trim().toLowerCase();
-        const userId = interaction.user.id;
-        const guildId = interaction.guild.id;
+        const clientId = process.env.X_CLIENT_ID;
+        const callbackURL = process.env.X_CALLBACK_URL;
 
-        if (!username || username.length < 2) {
+        if (!clientId || !callbackURL) {
             return InteractionHelper.safeEditReply(interaction, {
-                embeds: [errorEmbed('Error', 'Please enter a valid username.')]
+                embeds: [errorEmbed('Config Error', 'X API keys are missing. Contact admin.')]
             });
         }
 
-        const linkData = {
-            xUsername: username,
-            userId: userId,
-            guildId: guildId,
-            linkedAt: Date.now()
-        };
+        // Create a secure state to link back to this Discord user
+        const state = crypto.randomBytes(16).toString('hex') + `_${interaction.user.id}_${interaction.guild.id}`;
 
-        // Save in the simplest possible way
-        await interaction.client.db.set(`xlink_${userId}`, linkData);
-        await interaction.client.db.set(`xlink_${userId}_${guildId}`, linkData);
+        // Save state temporarily
+        await interaction.client.db.set(`oauth_state:${state}`, {
+            discordId: interaction.user.id,
+            guildId: interaction.guild.id,
+            createdAt: Date.now()
+        }, 600); // 10 minutes expiry
 
-        // Also save just the username as string
-        await interaction.client.db.set(`xuser_${userId}`, username);
+        const scopes = encodeURIComponent('tweet.read users.read like.read offline.access');
+        const authURL = `https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackURL)}&scope=${scopes}&state=${state}&code_challenge=challenge&code_challenge_method=plain`;
 
-        logger.info(`X LINKED: ${userId} → @${username}`);
-
-        // Immediately read it back to confirm
-        const confirm = await interaction.client.db.get(`xuser_${userId}`);
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setLabel('Link X Account')
+                .setStyle(ButtonStyle.Link)
+                .setURL(authURL)
+                .setEmoji('🔗')
+        );
 
         await InteractionHelper.safeEditReply(interaction, {
             embeds: [
                 successEmbed(
-                    'X Account Linked!',
-                    `Successfully linked: **@${username}**\n\n` +
-                    `Confirmation read-back: **${confirm || 'FAILED'}**\n\n` +
-                    `Now click **Verify my engagement** on the raid.`
+                    'Link your X Account',
+                    'Click the button below to securely link your X account.\n\nYou will be taken to X to authorize the app (exactly like Origins).'
                 )
-            ]
+            ],
+            components: [row]
         });
+
+        logger.info(`OAuth link started for ${interaction.user.id}`);
     }, { type: 'command', commandName: 'link-x' })
 };
