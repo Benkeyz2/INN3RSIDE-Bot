@@ -95,7 +95,11 @@ export default {
         );
 
         const row2 = new ActionRowBuilder().addComponents(
-            indButtonBuilder().setCustomId(`raid_verify:${raidId}`).setLabel('Verify my engagement').setStyle(ButtonStyle.Success).setEmoji('✅')
+            new ButtonBuilder()
+                .setCustomId(`raid_verify:${raidId}`)
+                .setLabel('Verify my engagement')
+                .setStyle(ButtonStyle.Success)
+                .setEmoji('✅')
         );
 
         const raidMessage = await interaction.channel.send({
