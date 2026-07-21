@@ -3,77 +3,113 @@ import { InteractionHelper } from '../../../utils/interactionHelper.js';
 import { logger } from '../../../utils/logger.js';
 
 export default {
-    name: 'raid_verify', // ← this is required by your bot
+    name: 'raid_verify',
     async execute(interaction, client, args) {
-        await InteractionHelper.safeDefer(interaction, { flags: ['Ephemeral'] });
+        try {
+            await InteractionHelper.safeDefer(interaction, { flags: ['Ephemeral'] });
 
-        const raidId = args[0]; // comes from customId after the :
-        const guildId = interaction.guild.id;
-        const userId = interaction.user.id;
+            const raidId = args?.[0];
+            const guildId = interaction.guild?.id;
+            const userId = interaction.user.id;
 
-        // Get raid
-        const raid = await client.db.get(`guild:\( {guildId}:raids: \){raidId}`);
-        if (!raid || !raid.active) {
-            return InteractionHelper.safeEditReply(interaction, {
-                embeds: [errorEmbed('Raid Closed', 'This raid has already ended.')]
-            });
-        }
-
-        // Check if linked
-        const link = await client.db.get(`guild:\( {guildId}:xlink: \){userId}`);
-        if (!link) {
-            return InteractionHelper.safeEditReply(interaction, {
-                embeds: [errorEmbed('Not Linked', 'You must link your X account first using `/link-x`')]
-            });
-        }
-
-        // Check if already verified
-        const already = await client.db.get(`guild:\( {guildId}:raid_eng: \){raidId}:${userId}`);
-        if (already) {
-            return InteractionHelper.safeEditReply(interaction, {
-                embeds: [errorEmbed('Already Verified', 'You already claimed points for this raid.')]
-            });
-        }
-
-        // Give points
-        const totalPoints = (raid.pointsLike || 0) + (raid.pointsReply || 0);
-
-        // Save engagement
-        await client.db.set(`guild:\( {guildId}:raid_eng: \){raidId}:${userId}`, {
-            userId,
-            raidId,
-            points: totalPoints,
-            xUsername: link.xUsername,
-            verifiedAt: Date.now()
-        });
-
-        // Add to user total
-        const userPointsKey = `guild:\( {guildId}:engage_points: \){userId}`;
-        const current = await client.db.get(userPointsKey, { points: 0 });
-        current.points = (current.points || 0) + totalPoints;
-        await client.db.set(userPointsKey, current);
-
-        // Give reward role
-        if (raid.rewardRoleId) {
-            try {
-                const member = await interaction.guild.members.fetch(userId);
-                await member.roles.add(raid.rewardRoleId);
-            } catch (error) {
-                logger.warn('Could not give reward role', { error: error.message });
+            if (!raidId || !guildId) {
+                return InteractionHelper.safeEditReply(interaction, {
+                    embeds: [errorEmbed('Error', 'Invalid raid data. Please start a new raid.')]
+                });
             }
+
+            // Try to get the raid
+            let raid = await client.db.get(`guild:\( {guildId}:raids: \){raidId}`);
+
+            // Fallback: try without guild prefix just in case
+            if (!raid) {
+                raid = await client.db.get(`raids:${raidId}`);
+            }
+
+            if (!raid) {
+                logger.warn(`Raid not found: ${raidId} in guild ${guildId}`);
+                return InteractionHelper.safeEditReply(interaction, {
+                    embeds: [errorEmbed('Raid Not Found', 'This raid data was not found. Please ask an admin to start a new raid.')]
+                });
+            }
+
+            if (raid.active === false) {
+                return InteractionHelper.safeEditReply(interaction, {
+                    embeds: [errorEmbed('Raid Closed', 'This raid has already ended.')]
+                });
+            }
+
+            // Check if user linked X
+            const link = await client.db.get(`guild:\( {guildId}:xlink: \){userId}`);
+            if (!link || !link.xUsername) {
+                return InteractionHelper.safeEditReply(interaction, {
+                    embeds: [errorEmbed('Not Linked', 'You must first link your X account using `/link-x`')]
+                });
+            }
+
+            // Check if already verified
+            const alreadyKey = `guild:\( {guildId}:raid_eng: \){raidId}:${userId}`;
+            const already = await client.db.get(alreadyKey);
+            if (already) {
+                return InteractionHelper.safeEditReply(interaction, {
+                    embeds: [errorEmbed('Already Verified', 'You already claimed points for this raid.')]
+                });
+            }
+
+            // Calculate points
+            const totalPoints = (Number(raid.pointsLike) || 0) + (Number(raid.pointsReply) || 0);
+
+            // Save that this user verified
+            await client.db.set(alreadyKey, {
+                userId,
+                raidId,
+                points: totalPoints,
+                xUsername: link.xUsername,
+                verifiedAt: Date.now()
+            });
+
+            // Add points to user
+            const pointsKey = `guild:\( {guildId}:engage_points: \){userId}`;
+            const current = await client.db.get(pointsKey, { points: 0 });
+            current.points = (Number(current.points) || 0) + totalPoints;
+            current.xUsername = link.xUsername;
+            await client.db.set(pointsKey, current);
+
+            // Give reward role
+            if (raid.rewardRoleId) {
+                try {
+                    const member = await interaction.guild.members.fetch(userId);
+                    if (member && !member.roles.cache.has(raid.rewardRoleId)) {
+                        await member.roles.add(raid.rewardRoleId);
+                    }
+                } catch (err) {
+                    logger.warn('Failed to add reward role', { error: err.message });
+                }
+            }
+
+            await InteractionHelper.safeEditReply(interaction, {
+                embeds: [
+                    successEmbed(
+                        '✅ Engagement Verified!',
+                        `You earned **${totalPoints} points**!\n\n` +
+                        `Your total engage points: **${current.points}**\n` +
+                        `Linked X: **@${link.xUsername}**`
+                    )
+                ]
+            });
+
+            logger.info(`Raid verified successfully`, {
+                userId,
+                raidId,
+                points: totalPoints,
+                guildId
+            });
+
+        } catch (error) {
+            logger.error('Error in raid_verify button:', error);
+            await InteractionHelper.safeEditReply(interaction, {
+                embeds: [errorEmbed('Error', 'Something went wrong while verifying. Please try again.')]
+            }).catch(() => {});
         }
-
-        await InteractionHelper.safeEditReply(interaction, {
-            embeds: [
-                successEmbed(
-                    'Engagement Verified!',
-                    `You earned **${totalPoints} points**!\n\n` +
-                    `Your total engage points: **${current.points}**\n` +
-                    `Linked X: **@${link.xUsername}**`
-                )
-            ]
-        });
-
-        logger.info(`Raid verified: ${userId} on ${raidId}`, { points: totalPoints });
     }
 };
