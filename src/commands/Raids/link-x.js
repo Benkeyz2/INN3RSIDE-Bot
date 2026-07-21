@@ -8,10 +8,10 @@ export default {
     slashOnly: true,
     data: new SlashCommandBuilder()
         .setName('link-x')
-        .setDescription('Link your X (Twitter) account')
+        .setDescription('Link your X (Twitter) account for raids')
         .addStringOption(opt =>
             opt.setName('username')
-                .setDescription('Your X username without @')
+                .setDescription('Your X username (without @)')
                 .setRequired(true)
         ),
 
@@ -20,48 +20,44 @@ export default {
     execute: withErrorHandling(async (interaction) => {
         await InteractionHelper.safeDefer(interaction, { flags: ['Ephemeral'] });
 
-        const raw = interaction.options.getString('username');
-        const username = raw.replace('@', '').trim().toLowerCase();
+        const username = interaction.options.getString('username').replace('@', '').trim().toLowerCase();
+        const userId = interaction.user.id;
+        const guildId = interaction.guild.id;
 
         if (!username || username.length < 2) {
             return InteractionHelper.safeEditReply(interaction, {
-                embeds: [errorEmbed('Invalid Username', 'Please enter a valid X username.')]
+                embeds: [errorEmbed('Error', 'Please enter a valid username.')]
             });
         }
-
-        const guildId = interaction.guild.id;
-        const userId = interaction.user.id;
 
         const linkData = {
-            userId,
-            guildId,
             xUsername: username,
-            linkedAt: new Date().toISOString(),
-            tag: interaction.user.tag
+            userId: userId,
+            guildId: guildId,
+            linkedAt: Date.now()
         };
 
-        try {
-            // Save in multiple places for safety
-            await interaction.client.db.set(`xlink:${userId}`, linkData);
-            await interaction.client.db.set(`guild:${guildId}:xlink:${userId}`, linkData);
-            await interaction.client.db.set(`userx:${userId}`, username); // simple version
+        // Save in the simplest possible way
+        await interaction.client.db.set(`xlink_${userId}`, linkData);
+        await interaction.client.db.set(`xlink_${userId}_${guildId}`, linkData);
 
-            logger.info(`[LINK-X] Successfully linked @${username} for ${userId}`);
+        // Also save just the username as string
+        await interaction.client.db.set(`xuser_${userId}`, username);
 
-            await InteractionHelper.safeEditReply(interaction, {
-                embeds: [
-                    successEmbed(
-                        'X Linked Successfully!',
-                        `Your X account **@${username}** has been linked.\n\nNow go click **Verify my engagement** on the raid.`
-                    )
-                ]
-            });
-        } catch (error) {
-            logger.error('Failed to save X link:', error);
-            await InteractionHelper.safeEditReply(interaction, {
-                embeds: [errorEmbed('Database Error', 'Failed to save your link. Please contact the bot owner.')]
+        logger.info(`X LINKED: ${userId} → @${username}`);
 
-            });
-        }
+        // Immediately read it back to confirm
+        const confirm = await interaction.client.db.get(`xuser_${userId}`);
+
+        await InteractionHelper.safeEditReply(interaction, {
+            embeds: [
+                successEmbed(
+                    'X Account Linked!',
+                    `Successfully linked: **@${username}**\n\n` +
+                    `Confirmation read-back: **${confirm || 'FAILED'}**\n\n` +
+                    `Now click **Verify my engagement** on the raid.`
+                )
+            ]
+        });
     }, { type: 'command', commandName: 'link-x' })
 };
