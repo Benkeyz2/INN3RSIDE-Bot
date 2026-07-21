@@ -11,11 +11,33 @@ export default {
         .setName('raid')
         .setDescription('Start an X engagement raid')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addStringOption(opt => opt.setName('tweet_url').setDescription('Full X post link').setRequired(true))
-        .addIntegerOption(opt => opt.setName('points_like').setDescription('Points for Like').setRequired(true).setMinValue(1))
-        .addIntegerOption(opt => opt.setName('points_reply').setDescription('Points for Reply').setRequired(true).setMinValue(1))
-        .addStringOption(opt => opt.setName('duration').setDescription('Example: 1h, 6h, 1d, 3d').setRequired(true))
-        .addRoleOption(opt => opt.setName('reward_role').setDescription('Role reward (optional)').setRequired(false)),
+        .addStringOption(opt => 
+            opt.setName('tweet_url')
+                .setDescription('Full X post link')
+                .setRequired(true)
+        )
+        .addIntegerOption(opt => 
+            opt.setName('points_like')
+                .setDescription('Points for Like')
+                .setRequired(true)
+                .setMinValue(1)
+        )
+        .addIntegerOption(opt => 
+            opt.setName('points_reply')
+                .setDescription('Points for Reply')
+                .setRequired(true)
+                .setMinValue(1)
+        )
+        .addStringOption(opt => 
+            opt.setName('duration')
+                .setDescription('Example: 1h, 6h, 1d, 3d')
+                .setRequired(true)
+        )
+        .addRoleOption(opt => 
+            opt.setName('reward_role')
+                .setDescription('Role reward (optional)')
+                .setRequired(false)
+        ),
 
     category: 'Raids',
 
@@ -38,13 +60,20 @@ export default {
 
         const amount = parseInt(match[1]);
         const unit = match[2];
-        let durationMs = unit === 'd' ? amount * 86400000 : unit === 'h' ? amount * 3600000 : amount * 60000;
+        let durationMs = 0;
+
+        if (unit === 'd') durationMs = amount * 86400000;
+        else if (unit === 'h') durationMs = amount * 3600000;
+        else if (unit === 'm') durationMs = amount * 60000;
 
         const endsAt = Date.now() + durationMs;
         const raidId = randomUUID();
 
         const embed = createEmbed({
-            author: { name: 'inn3rside Engage', iconURL: interaction.client.user.displayAvatarURL() },
+            author: {
+                name: 'inn3rside Engage',
+                iconURL: interaction.client.user.displayAvatarURL()
+            },
             title: '⚔️ RAID IS LIVE',
             description: `**Engage to earn points!**\n\n1. Link your X → \`/link-x\`\n2. Like + Reply + Retweet the post\n3. Click **Verify** below after you engage\n\n📄 **Tweet:**\n${tweetUrl}`,
             fields: [
@@ -56,7 +85,6 @@ export default {
             footer: { text: `Started by ${interaction.user.username} • Only linked members can earn` },
             timestamp: true,
             color: 0x1DA1F2
-        });: true
         });
 
         const row1 = new ActionRowBuilder().addComponents(
@@ -73,7 +101,10 @@ export default {
                 .setEmoji('✅')
         );
 
-        const msg = await interaction.channel.send({ embeds: [embed], components: [row1, row2] });
+        const msg = await interaction.channel.send({
+            embeds: [embed],
+            components: [row1, row2]
+        });
 
         const raidData = {
             raidId,
