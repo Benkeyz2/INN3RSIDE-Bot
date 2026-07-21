@@ -9,35 +9,13 @@ export default {
     slashOnly: true,
     data: new SlashCommandBuilder()
         .setName('raid')
-        .setDescription('Start an X/Twitter engagement raid')
+        .setDescription('Start an X engagement raid')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addStringOption(option =>
-            option.setName('tweet_url')
-                .setDescription('The full X/Twitter post link')
-                .setRequired(true)
-        )
-        .addIntegerOption(option =>
-            option.setName('points_like')
-                .setDescription('Points for Like')
-                .setRequired(true)
-                .setMinValue(1)
-        )
-        .addIntegerOption(option =>
-            option.setName('points_reply')
-                .setDescription('Points for Reply')
-                .setRequired(true)
-                .setMinValue(1)
-        )
-        .addStringOption(option =>
-            option.setName('duration')
-                .setDescription('Duration (example: 1h, 6h, 1d, 3d)')
-                .setRequired(true)
-        )
-        .addRoleOption(option =>
-            option.setName('reward_role')
-                .setDescription('Role to give after verify (optional)')
-                .setRequired(false)
-        ),
+        .addStringOption(opt => opt.setName('tweet_url').setDescription('Full X post link').setRequired(true))
+        .addIntegerOption(opt => opt.setName('points_like').setDescription('Points for Like').setRequired(true).setMinValue(1))
+        .addIntegerOption(opt => opt.setName('points_reply').setDescription('Points for Reply').setRequired(true).setMinValue(1))
+        .addStringOption(opt => opt.setName('duration').setDescription('Example: 1h, 6h, 1d, 3d').setRequired(true))
+        .addRoleOption(opt => opt.setName('reward_role').setDescription('Role reward (optional)').setRequired(false)),
 
     category: 'Raids',
 
@@ -50,7 +28,6 @@ export default {
         const durationRaw = interaction.options.getString('duration').toLowerCase();
         const rewardRole = interaction.options.getRole('reward_role');
 
-        // Duration parser
         const match = durationRaw.match(/^(\d+)(d|h|m)$/);
         if (!match) {
             return replyUserError(interaction, {
@@ -61,31 +38,25 @@ export default {
 
         const amount = parseInt(match[1]);
         const unit = match[2];
-        let durationMs = 0;
-
-        if (unit === 'd') durationMs = amount * 86400000;
-        if (unit === 'h') durationMs = amount * 3600000;
-        if (unit === 'm') durationMs = amount * 60000;
+        let durationMs = unit === 'd' ? amount * 86400000 : unit === 'h' ? amount * 3600000 : amount * 60000;
 
         const endsAt = Date.now() + durationMs;
         const raidId = randomUUID();
 
         const embed = createEmbed({
-            author: {
-                name: 'inn3rside Engage',
-                iconURL: interaction.client.user.displayAvatarURL()
-            },
+            author: { name: 'inn3rside Engage', iconURL: interaction.client.user.displayAvatarURL() },
             title: '⚔️ RAID IS LIVE',
-            description: `**inn3rside just posted — engage to earn points.**\n\n1. Link your X once → \`/link-x\`\n2. Like / Reply / Retweet the tweet below\n3. Click Verify after you engage\n\n📄 **The tweet**\n${tweetUrl}`,
+            description: `**Engage to earn points!**\n\n1. Link your X → \`/link-x\`\n2. Like + Reply + Retweet the post\n3. Click **Verify** below after you engage\n\n📄 **Tweet:**\n${tweetUrl}`,
             fields: [
                 { name: '❤️ Like', value: `${pointsLike} pts`, inline: true },
                 { name: '💬 Reply', value: `${pointsReply} pts`, inline: true },
-                { name: '⏰ Closes', value: `<t:${Math.floor(endsAt / 1000)}:R>`, inline: true },
-                { name: '🎁 Reward role', value: rewardRole ? `${rewardRole}` : 'None', inline: false }
+                { name: '⏰ Ends', value: `<t:${Math.floor(endsAt / 1000)}:R>`, inline: true },
+                { name: '🎁 Role Reward', value: rewardRole ? `${rewardRole}` : 'None', inline: false }
             ],
-            footer: { text: `Only linked members earn • started by ${interaction.user.username}` },
+            footer: { text: `Started by ${interaction.user.username} • Only linked members can earn` },
             timestamp: true,
             color: 0x1DA1F2
+        });: true
         });
 
         const row1 = new ActionRowBuilder().addComponents(
@@ -102,33 +73,29 @@ export default {
                 .setEmoji('✅')
         );
 
-        const raidMessage = await interaction.channel.send({
-            embeds: [embed],
-            components: [row1, row2]
-        });
+        const msg = await interaction.channel.send({ embeds: [embed], components: [row1, row2] });
 
         const raidData = {
             raidId,
             tweetUrl,
-            messageId: raidMessage.id,
-            channelId: interaction.channel.id,
+            messageId: msg.id,
+            channelId: msg.channel.id,
             guildId: interaction.guild.id,
             pointsLike,
             pointsReply,
             endsAt,
             rewardRoleId: rewardRole?.id || null,
-            startedBy: interaction.user.id,
             active: true,
             createdAt: Date.now()
         };
 
-        await interaction.client.db.set(`guild:${interaction.guild.id}:raids:${raidId}`, raidData);
         await interaction.client.db.set(`raids:${raidId}`, raidData);
+        await interaction.client.db.set(`guild:${interaction.guild.id}:raids:${raidId}`, raidData);
 
         await InteractionHelper.safeEditReply(interaction, {
-            embeds: [successEmbed('Raid Started!', `Successfully started the raid!\nCloses: <t:${Math.floor(endsAt / 1000)}:R>`)]
+            embeds: [successEmbed('Raid Started!', `Raid is live!\nEnds: <t:${Math.floor(endsAt / 1000)}:R>`)]
         });
 
-        logger.info(`New raid created: ${raidId}`);
+        logger.info(`Raid started: ${raidId}`);
     }, { type: 'command', commandName: 'raid' })
 };
