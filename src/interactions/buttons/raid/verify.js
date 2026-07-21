@@ -5,114 +5,93 @@ import { logger } from '../../../utils/logger.js';
 export default {
     name: 'raid_verify',
     async execute(interaction, client, args) {
+        await InteractionHelper.safeDefer(interaction, { flags: ['Ephemeral'] });
+
+        const raidId = args?.[0];
+        const guildId = interaction.guild.id;
+        const userId = interaction.user.id;
+
         try {
-            await InteractionHelper.safeDefer(interaction, { flags: ['Ephemeral'] });
-
-            const raidId = args?.[0];
-            const guildId = interaction.guild.id;
-            const userId = interaction.user.id;
-
-            logger.info(`Verify clicked by ${userId} for raid ${raidId}`);
-
-            // ========== FIND THE RAID ==========
-            let raid = await client.db.get(`guild:${guildId}:raids:${raidId}`);
-            if (!raid) raid = await client.db.get(`raids:${raidId}`);
-
+            // Get raid
+            let raid = await client.db.get(`guild:${guildId}:raids:${raidId}`) || await client.db.get(`raids:${raidId}`);
+            
             if (!raid) {
                 return InteractionHelper.safeEditReply(interaction, {
-                    embeds: [errorEmbed('Raid Not Found', 'This raid was not found. Please start a new raid.')]
+                    embeds: [errorEmbed('Raid Not Found', 'Raid data missing. Start a new raid.')]
                 });
             }
 
-            // ========== FIND THE X LINK (VERY AGGRESSIVE SEARCH) ==========
-            let link = null;
+            // ========== FIND LINK - SIMPLE & STRONG ==========
+            let username = null;
 
-            // Try all possible keys
-            const possibleKeys = [
-                `guild:${guildId}:xlink:${userId}`,
-                `xlink:${guildId}:${userId}`,
-                `guild:${guildId}:xlink:${userId.toLowerCase()}`,
-                `xlink:${userId}`,
-                `user:${userId}:xlink`,
-                `xlink:${userId}:${guildId}`
-            ];
+            // Method 1
+            let data = await client.db.get(`xlink:${userId}`);
+            if (data?.xUsername) username = data.xUsername;
 
-            for (const key of possibleKeys) {
-                const data = await client.db.get(key);
-                if (data && data.xUsername) {
-                    link = data;
-                    logger.info(`Found X link using key: ${key}`);
-                    break;
-                }
+            // Method 2
+            if (!username) {
+                data = await client.db.get(`guild:${guildId}:xlink:${userId}`);
+                if (data?.xUsername) username = data.xUsername;
             }
 
-            if (!link || !link.xUsername) {
-                // Last chance - try to get any xlink for this user
-                logger.warn(`No X link found for user ${userId} in guild ${guildId}`);
-                
+            // Method 3 (simplest)
+            if (!username) {
+                username = await client.db.get(`userx:${userId}`);
+            }
+
+            if (!username) {
                 return InteractionHelper.safeEditReply(interaction, {
                     embeds: [errorEmbed(
-                        'X Account Not Linked',
-                        'I cannot find your linked X account.\n\nPlease run this command again:\n\n`/link-x username:YourXUsername`\n\nThen click Verify again.'
+                        'X Not Linked',
+                        'Still cannot find your X account.\n\nPlease run:\n`/link-x username:YourUsername`\n\nThen try Verify again immediately.'
                     )]
                 });
             }
 
-            // ========== ALREADY VERIFIED CHECK ==========
-            const alreadyKey = `guild:${guildId}:raid_eng:${raidId}:${userId}`;
-            const already = await client.db.get(alreadyKey);
+            // Check already verified
+            const engKey = `eng:${raidId}:${userId}`;
+            const already = await client.db.get(engKey);
             if (already) {
                 return InteractionHelper.safeEditReply(interaction, {
-                    embeds: [errorEmbed('Already Claimed', 'You already verified and got points for this raid.')]
+                    embeds: [errorEmbed('Already Verified', 'You already got the points for this raid.')]
                 });
             }
 
-            // ========== GIVE POINTS ==========
-            const totalPoints = (Number(raid.pointsLike) || 0) + (Number(raid.pointsReply) || 0);
+            // Give points
+            const points = (raid.pointsLike || 0) + (raid.pointsReply || 0);
 
-            await client.db.set(alreadyKey, {
-                userId,
-                raidId,
-                points: totalPoints,
-                xUsername: link.xUsername,
-                verifiedAt: Date.now()
-            });
+            await client.db.set(engKey, { points, username, at: Date.now() });
 
-            // Save total points
-            const pointsKey = `guild:${guildId}:engage_points:${userId}`;
-            let pointsData = await client.db.get(pointsKey, { points: 0 });
-            pointsData.points = (Number(pointsData.points) || 0) + totalPointsPoints;
-            pointsData.xUsername = link.xUsername;
-            await client.db.set(pointsKey, pointsData);
+            // Total points
+            const totalKey = `engagepoints:${userId}`;
+            let total = await client.db.get(totalKey, 0);
+            total = Number(total) + points;
+            await client.db.set(totalKey, total);
 
-            // Give role if exists
+            // Role
             if (raid.rewardRoleId) {
                 try {
                     const member = await interaction.guild.members.fetch(userId);
                     await member.roles.add(raid.rewardRoleId);
-                } catch (e) {
-                    logger.warn('Role give failed', e.message);
-                }
+                } catch (e) {}
             }
 
             await InteractionHelper.safeEditReply(interaction, {
                 embeds: [
                     successEmbed(
-                        '✅ SUCCESS! Engagement Verified',
-                        `You received **${totalPoints} points**!\n\n` +
-                        `Total Points: **${pointsData.points}**\n` +
-                        `X Account: **@${link.xUsername}**`
+                        '✅ VERIFIED SUCCESSFULLY!',
+                        `**+${points} points**\n\nYour X: **@${username}**\nTotal Points: **${total}**`
                     )
                 ]
             });
 
-            logger.info(`SUCCESS: ${userId} (@${link.xUsername}) got ${totalPoints} points`);
+            logger.info(`[VERIFY SUCCESS] ${userId} @${username} +${points}pts`);
 
         } catch (error) {
-            logger.error('Verify button crash:', error);
+            logger.error('Verify error:', error);
             await InteractionHelper.safeEditReply(interaction, {
-                embeds: [errorEmbed('Error', 'Something went wrong. Please try linking again with /link-x')]
-            }).catch(() => {});
+                embeds: [errorEmbed('Error', 'Unexpected error. Try linking again.')]
+            });
         }
     }
 };
