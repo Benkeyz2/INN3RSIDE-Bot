@@ -12,60 +12,124 @@ export default {
         const guildId = interaction.guild.id;
 
         try {
-            // Get raid
+            // 1. Get the raid
             let raid = await client.db.get(`guild:${guildId}:raids:${raidId}`) || 
                        await client.db.get(`raids:${raidId}`);
 
             if (!raid) {
                 return InteractionHelper.safeEditReply(interaction, {
-                    embeds: [errorEmbed('Raid Not Found', 'Please start a new raid.')]
+                    embeds: [errorEmbed('Raid Not Found', 'This raid no longer exists. Please start a new one.')]
                 });
             }
 
-            // ========== FIND USERNAME - SIMPLE KEYS ==========
-            let username = await client.db.get(`xuser_${userId}`);
-
-            if (!username) {
-                const data = await client.db.get(`xlink_${userId}`);
-                if (data) username = data.xUsername;
+            if (raid.active === false || Date.now() > raid.endsAt) {
+                return InteractionHelper.safeEditReply(interaction, {
+                    embeds: [errorEmbed('Raid Ended', 'This raid has already closed.')]
+                });
             }
 
-            if (!username) {
-                const data2 = await client.db.get(`xlink_${userId}_${guildId}`);
-                if (data2) username = data2.xUsername;
-            }
+            // 2. Get the user's linked X account (real OAuth data)
+            let linkData = await client.db.get(`xlink:${userId}`) || 
+                           await client.db.get(`guild:${guildId}:xlink:${userId}`);
 
-            if (!username) {
+            if (!linkData || !linkData.accessToken || !linkData.xUsername) {
                 return InteractionHelper.safeEditReply(interaction, {
                     embeds: [errorEmbed(
                         'X Not Linked',
-                        'Still cannot find your link.\n\n' +
-                        'Please run `/link-x` again and look at the confirmation message.\n' +
-                        'If it says "Confirmation read-back: FAILED" then your database is in memory mode.'
+                        'You must link your X account first.\n\nUse the command:\n`/link-x`'
                     )]
                 });
             }
 
-            // Already verified?
-            const engKey = `eng_${raidId}_${userId}`;
-            if (await client.db.get(engKey)) {
+            // 3. Check if already verified for this raid
+            const alreadyKey = `eng:${raidId}:${userId}`;
+            const already = await client.db.get(alreadyKey);
+            if (already) {
                 return InteractionHelper.safeEditReply(interaction, {
                     embeds: [errorEmbed('Already Verified', 'You already claimed points for this raid.')]
                 });
             }
 
-            // Give points
-            const points = (Number(raid.pointsLike) || 0) + (Number(raid.pointsReply) || 0);
+            // 4. REAL CHECK using X API
+            const tweetId = extractTweetId(raid.tweetUrl);
+            if (!tweetId) {
+                return InteractionHelper.safeEditReply(interaction, {
+                    embeds: [errorEmbed('Error', 'Invalid tweet URL in this raid.')]
+                });
+            }
 
-            await client.db.set(engKey, true);
+            const accessToken = linkData.accessToken;
+            let hasLiked = false;
+            let hasReplied = false;
 
-            // Total
-            let total = await client.db.get(`points_${userId}`, 0);
-            total = Number(total) + points;
+            // --- Check if user liked the tweet ---
+            try {
+                const likeRes = await fetch(`https://api.twitter.com/2/users/${linkData.xId}/liked_tweets?max_results=100`, {
+                    headers: { Authorization: `Bearer ${accessToken}` }
+                });
+                const likeData = await likeRes.json();
+                
+                if (likeData.data) {
+                    hasLiked = likeData.data.some(t => t.id === tweetId);
+                }
+            } catch (e) {
+                logger.warn('Like check failed', e.message);
+            }
 
-            await client.db.set(`points_${userId}`, total);
+            // --- Check if user replied to the tweet ---
+            try {
+                const replyRes = await fetch(`https://api.twitter.com/2/tweets/search/recent?query=conversation_id:${tweetId} from:${linkData.xUsername}&max_results=10`, {
+                    headers: { Authorization: `Bearer ${process.env.X_BEARER_TOKEN}` }
+                });
+                const replyData = await replyRes.json();
+                
+                if (replyData.data && replyData.data.length > 0) {
+                    hasReplied = true;
+                }
+            } catch (e) {
+                logger.warn('Reply check failed', e.message);
+            }
 
-            // Role
+            // 5. Calculate points
+            let earned = 0;
+            let message = '';
+
+            if (hasLiked) {
+                earned += Number(raid.pointsLike) || 0;
+                message += `❤️ Liked (+${raid.pointsLike})\n`;
+            }
+            if (hasReplied) {
+                earned += Number(raid.pointsReply) || 0;
+                message += `💬 Replied (+${raid.pointsReply})\n`;
+            }
+
+            if (earned === 0) {
+                return InteractionHelper.safeEditReply(interaction, {
+                    embeds: [errorEmbed(
+                        'No Engagement Found',
+                        `I could not find your Like or Reply on the tweet.\n\n` +
+                        `Please make sure you:\n` +
+                        `• Liked the post\n` +
+                        `• Replied to the post\n\n` +
+                        `Then click Verify again.`
+                    )]
+                });
+            }
+
+            // 6. Save and give points
+            await client.db.set(alreadyKey, {
+                liked: hasLiked,
+                replied: hasReplied,
+                points: earned,
+                at: Date.now()
+            });
+
+            const pointsKey = `points_${userId}`;
+            let total = await client.db.get(pointsKey, 0);
+            total = Number(total) + earned;
+            await client.db.set(pointsKey, total);
+
+            // Give role if set
             if (raid.rewardRoleId) {
                 try {
                     const member = await interaction.guild.members.fetch(userId);
@@ -76,21 +140,32 @@ export default {
             await InteractionHelper.safeEditReply(interaction, {
                 embeds: [
                     successEmbed(
-                        '✅ VERIFIED!',
-                        `**+${points} points** earned!\n\n` +
-                        `X: **@${username}**\n` +
-                        `Total Points: **${total}**`
+                        '✅ Engagement Verified!',
+                        `${message}\n` +
+                        `**Total earned this raid: ${earned} points**\n\n` +
+                        `Your X: **@${linkData.xUsername}**\n` +
+                        `All-time points: **${total}**`
                     )
                 ]
             });
 
-            logger.info(`VERIFY SUCCESS: ${userId} @${username} +${points}`);
+            logger.info(`[REAL VERIFY] ${userId} @${linkData.xUsername} → +${earned}pts (Liked: ${hasLiked}, Replied: ${hasReplied})`);
 
         } catch (error) {
-            logger.error('Verify error:', error);
+            logger.error('Real verify error:', error);
             await InteractionHelper.safeEditReply(interaction, {
-                embeds: [errorEmbed('Error', 'Something went wrong.')]
+                embeds: [errorEmbed('Error', 'Something went wrong while checking your engagement. Please try again.')]
             });
         }
     }
 };
+
+// Helper to extract tweet ID from URL
+function extractTweetId(url) {
+    try {
+        const match = url.match(/status\/(\d+)/);
+        return match ? match[1] : null;
+    } catch {
+        return null;
+    }
+}
