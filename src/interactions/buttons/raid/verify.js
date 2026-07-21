@@ -3,16 +3,16 @@ import { InteractionHelper } from '../../../utils/interactionHelper.js';
 import { logger } from '../../../utils/logger.js';
 
 export default {
-    customId: 'raid_verify_', // prefix match
-    async execute(interaction) {
+    name: 'raid_verify', // ← this is required by your bot
+    async execute(interaction, client, args) {
         await InteractionHelper.safeDefer(interaction, { flags: ['Ephemeral'] });
 
-        const raidId = interaction.customId.replace('raid_verify_', '');
+        const raidId = args[0]; // comes from customId after the :
         const guildId = interaction.guild.id;
         const userId = interaction.user.id;
 
         // Get raid
-        const raid = await interaction.client.db.get(`guild:\( {guildId}:raids: \){raidId}`);
+        const raid = await client.db.get(`guild:\( {guildId}:raids: \){raidId}`);
         if (!raid || !raid.active) {
             return InteractionHelper.safeEditReply(interaction, {
                 embeds: [errorEmbed('Raid Closed', 'This raid has already ended.')]
@@ -20,7 +20,7 @@ export default {
         }
 
         // Check if linked
-        const link = await interaction.client.db.get(`guild:\( {guildId}:xlink: \){userId}`);
+        const link = await client.db.get(`guild:\( {guildId}:xlink: \){userId}`);
         if (!link) {
             return InteractionHelper.safeEditReply(interaction, {
                 embeds: [errorEmbed('Not Linked', 'You must link your X account first using `/link-x`')]
@@ -28,18 +28,18 @@ export default {
         }
 
         // Check if already verified
-        const already = await interaction.client.db.get(`guild:\( {guildId}:raid_eng: \){raidId}:${userId}`);
+        const already = await client.db.get(`guild:\( {guildId}:raid_eng: \){raidId}:${userId}`);
         if (already) {
             return InteractionHelper.safeEditReply(interaction, {
                 embeds: [errorEmbed('Already Verified', 'You already claimed points for this raid.')]
             });
         }
 
-        // Give points (Like + Reply for now)
+        // Give points
         const totalPoints = (raid.pointsLike || 0) + (raid.pointsReply || 0);
 
         // Save engagement
-        await interaction.client.db.set(`guild:\( {guildId}:raid_eng: \){raidId}:${userId}`, {
+        await client.db.set(`guild:\( {guildId}:raid_eng: \){raidId}:${userId}`, {
             userId,
             raidId,
             points: totalPoints,
@@ -47,13 +47,13 @@ export default {
             verifiedAt: Date.now()
         });
 
-        // Add to user total engage points
+        // Add to user total
         const userPointsKey = `guild:\( {guildId}:engage_points: \){userId}`;
-        const current = await interaction.client.db.get(userPointsKey, { points: 0 });
+        const current = await client.db.get(userPointsKey, { points: 0 });
         current.points = (current.points || 0) + totalPoints;
-        await interaction.client.db.set(userPointsKey, current);
+        await client.db.set(userPointsKey, current);
 
-        // Give reward role if set
+        // Give reward role
         if (raid.rewardRoleId) {
             try {
                 const member = await interaction.guild.members.fetch(userId);
