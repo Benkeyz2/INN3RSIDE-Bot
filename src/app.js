@@ -153,123 +153,210 @@ class TitanBot extends Client {
     });
 
     // ==================== REAL X OAUTH CALLBACK (ORIGINS STYLE) ====================
-    app.get('/callback', async (req, res) => {
-      try {
+app.get('/callback', async (req, res) => {
+    try {
+
         const { code, state } = req.query;
 
         if (!code || !state) {
-          return res.send(`
-            <h1 style="color:white;background:#0f0f0f;padding:40px;font-family:Arial">Error</h1>
-            <p style="color:#ccc;background:#0f0f0f;padding:20px;font-family:Arial">Missing code or state. Please try /link-x again from Discord.</p>
-          `);
+            return res.send(`
+                <h1>OAuth Error</h1>
+                <p>Missing authorization code.</p>
+            `);
         }
 
         const stateData = await this.db.get(`oauth_state:${state}`);
+
         if (!stateData) {
-          return res.send(`
-            <h1 style="color:white;background:#0f0f0f;padding:40px;font-family:Arial">Session Expired</h1>
-            <p style="color:#ccc;background:#0f0f0f;padding:20px;font-family:Arial">Please go back to Discord and run /link-x again.</p>
-          `);
+            return res.send(`
+                <h1>Session Expired</h1>
+                <p>Please return to Discord and run /link-x again.</p>
+            `);
         }
 
-        const { discordId, guildId } = stateData;
+        const {
+            discordId,
+            guildId,
+            verifier,
+            createdAt
+        } = stateData;
+
+        if (!verifier) {
+            return res.send(`
+                <h1>OAuth Error</h1>
+                <p>Missing PKCE verifier.</p>
+            `);
+        }
+
+        if (Date.now() - createdAt > 600000) {
+            await this.db.delete(`oauth_state:${state}`);
+
+            return res.send(`
+                <h1>Session Expired</h1>
+                <p>Please run /link-x again.</p>
+            `);
+        }
 
         const credentials = Buffer.from(
-          `${process.env.X_CLIENT_ID}:${process.env.X_CLIENT_SECRET}`
-        ).toString('base64');
+            `${process.env.X_CLIENT_ID}:${process.env.X_CLIENT_SECRET}`
+        ).toString("base64");
 
-        const tokenResponse = await fetch('https://api.twitter.com/2/oauth2/token', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Authorization': `Basic ${credentials}`
-          },
-          body: new URLSearchParams({
-            code: code,
-            grant_type: 'authorization_code',
-            redirect_uri: process.env.X_CALLBACK_URL,
-            code_verifier: 'challenge'
-          })
-        });
+        const tokenResponse = await fetch(
+            "https://api.twitter.com/2/oauth2/token",
+            {
+                method: "POST",
+                headers: {
+                    Authorization: `Basic ${credentials}`,
+                    "Content-Type":
+                        "application/x-www-form-urlencoded"
+                },
+                body: new URLSearchParams({
+                    code,
+                    grant_type: "authorization_code",
+                    redirect_uri:
+                        process.env.X_CALLBACK_URL,
+                    code_verifier: verifier
+                })
+            }
+        );
 
         const tokenData = await tokenResponse.json();
 
         if (!tokenData.access_token) {
-          console.error('Token error:', tokenData);
-          return res.send(`
-            <h1 style="color:white;background:#0f0f0f;padding:40px;font-family:Arial">Authorization Failed</h1>
-            <p style="color:#ccc;background:#0f0f0f;padding:20px;font-family:Arial">Could not get access token. Please try again.</p>
-          `);
+
+            console.error(tokenData);
+
+            return res.send(`
+                <h1>Authorization Failed</h1>
+                <p>Unable to obtain access token.</p>
+            `);
+
         }
 
-        const userResponse = await fetch('https://api.twitter.com/2/users/me', {
-          headers: {
-            'Authorization': `Bearer ${tokenData.access_token}`
-          }
-        });
+        const userResponse = await fetch(
+            "https://api.twitter.com/2/users/me?user.fields=id,name,username",
+            {
+                headers: {
+                    Authorization:
+                        `Bearer ${tokenData.access_token}`
+                }
+            }
+        );
 
         const userData = await userResponse.json();
-        const xUser = userData.data;
 
-        if (!xUser) {
-          return res.send(`
-            <h1 style="color:white;background:#0f0f0f;padding:40px;font-family:Arial">Error</h1>
-            <p style="color:#ccc;background:#0f0f0f;padding:20px;font-family:Arial">Could not fetch your X profile.</p>
-          `);
+        if (!userData.data) {
+
+            return res.send(`
+                <h1>Error</h1>
+                <p>Unable to fetch your X profile.</p>
+            `);
+
         }
 
+        const xUser = userData.data;
+
         const linkData = {
-          discordId,
-          guildId,
-          xId: xUser.id,
-          xUsername: xUser.username,
-          xName: xUser.name,
-          accessToken: tokenData.access_token,
-          refreshToken: tokenData.refresh_token || null,
-          expiresAt: Date.now() + (tokenData.expires_in * 1000),
-          linkedAt: Date.now()
+
+            discordId,
+
+            guildId,
+
+            xId: xUser.id,
+
+            xUsername: xUser.username,
+
+            xName: xUser.name,
+
+            accessToken:
+                tokenData.access_token,
+
+            refreshToken:
+                tokenData.refresh_token ?? null,
+
+            expiresAt:
+                Date.now() +
+                ((tokenData.expires_in ?? 7200) * 1000),
+
+            linkedAt: Date.now(),
+
+            verified: true
+
         };
 
-        await this.db.set(`xlink:${discordId}`, linkData);
-        await this.db.set(`xuser_${discordId}`, xUser.username);
-        await this.db.set(`guild:${guildId}:xlink:${discordId}`, linkData);
+        await this.db.set(
+            `xlink:${discordId}`,
+            linkData
+        );
 
-        await this.db.delete(`oauth_state:${state}`);
+        await this.db.set(
+            `guild:${guildId}:xlink:${discordId}`,
+            linkData
+        );
+
+        await this.db.set(
+            `xuser_${discordId}`,
+            xUser.username
+        );
+
+        await this.db.delete(
+            `oauth_state:${state}`
+        );
+
+        logger.info(
+            `[X OAuth] ${discordId} linked @${xUser.username}`
+        );
 
         res.send(`
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <title>X Linked Successfully - inn3rside</title>
-            <style>
-              body { font-family: Arial, sans-serif; background: #0f0f0f; color: white; text-align: center; padding: 60px 20px; margin: 0; }
-              .box { background: #1a1a1a; padding: 40px; border-radius: 16px; max-width: 480px; margin: 0 auto; border: 1px solid #333; }
-              h1 { color: #1DA1F2; margin-bottom: 16px; }
-              p { color: #ccc; line-height: 1.6; margin: 10px 0; }
-              .btn { background: #1DA1F2; color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; display: inline-block; margin-top: 25px; font-weight: bold; }
-            </style>
-          </head>
-          <body>
-            <div class="box">
-              <h1>✅ Successfully Linked!</h1>
-              <p>Your X account <strong>@${xUser.username}</strong> has been linked to Discord.</p>
-              <p>You can now close this page and go back to Discord.</p>
-              <p>Click <strong>Verify my engagement</strong> on the raid to earn points.</p>
-              <a class="btn" href="https://discord.com/channels/@me">Return to Discord</a>
-            </div>
-          </body>
-          </html>
+<!DOCTYPE html>
+<html>
+<head>
+<title>Linked</title>
+<style>
+body{
+background:#0f0f0f;
+color:white;
+font-family:Arial;
+display:flex;
+justify-content:center;
+align-items:center;
+height:100vh;
+margin:0;
+}
+.card{
+background:#1b1b1b;
+padding:40px;
+border-radius:15px;
+max-width:450px;
+text-align:center;
+}
+h1{
+color:#1DA1F2;
+}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>✅ X Linked Successfully</h1>
+<p>@${xUser.username}</p>
+<p>Your account has been linked.</p>
+<p>You can now return to Discord and verify raids.</p>
+</div>
+</body>
+</html>
+`);
+
+    } catch (err) {
+
+        logger.error(err);
+
+        res.send(`
+            <h1>Unexpected Error</h1>
+            <p>Please run /link-x again.</p>
         `);
 
-        console.log(`[X OAuth] Successfully linked @${xUser.username} → Discord ${discordId}`);
-      } catch (error) {
-        console.error('OAuth Callback Error:', error);
-        res.send(`
-          <h1 style="color:white;background:#0f0f0f;padding:40px;font-family:Arial">Error</h1>
-          <p style="color:#ccc;background:#0f0f0f;padding:20px;font-family:Arial">Something went wrong. Please try /link-x again.</p>
-        `);
-      }
-    });
+    }
+});
     // ==================== END X OAUTH CALLBACK ====================
 
     app.get('/health', (req, res) => {
