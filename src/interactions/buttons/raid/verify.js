@@ -15,6 +15,7 @@ export default {
         const guildId = interaction.guild.id;
 
         try {
+            // Get raid
             let raid = await client.db.get(`raids:${raidId}`) || await client.db.get(`guild:${guildId}:raids:${raidId}`);
             if (!raid) {
                 return InteractionHelper.safeEditReply(interaction, {
@@ -22,13 +23,18 @@ export default {
                 });
             }
 
-            const username = await client.db.get(`xuser_${userId}`);
-            if (!username) {
+            // Get real OAuth linked account
+            let linkData = await client.db.get(`xlink:${userId}`) || await client.db.get(`guild:${guildId}:xlink:${userId}`);
+            
+            if (!linkData || !linkData.xUsername) {
                 return InteractionHelper.safeEditReply(interaction, {
-                    embeds: [errorEmbed('Not Linked', 'Please link your X first using `/link-x username:YourName`')]
+                    embeds: [errorEmbed('X Not Linked', 'Please run `/link-x` and authorize your X account first.')]
                 });
             }
 
+            const username = linkData.xUsername.toLowerCase();
+
+            // Already verified?
             const alreadyKey = `eng:${raidId}:${userId}`;
             if (await client.db.get(alreadyKey)) {
                 return InteractionHelper.safeEditReply(interaction, {
@@ -43,7 +49,7 @@ export default {
                 });
             }
 
-            // ===== CHECK WITH TWITTERAPI.IO =====
+            // ========== CHECK WITH TWITTERAPI.IO ==========
             let hasReplied = false;
             let hasRetweeted = false;
 
@@ -56,7 +62,7 @@ export default {
                 const data = await res.json();
                 if (data.tweets && data.tweets.length > 0) hasReplied = true;
             } catch (e) {
-                logger.warn('Reply check error', e.message);
+                logger.warn('Reply check failed', e.message);
             }
 
             // Check Retweet
@@ -68,7 +74,7 @@ export default {
                 const data = await res.json();
                 if (data.tweets && data.tweets.length > 0) hasRetweeted = true;
             } catch (e) {
-                logger.warn('Retweet check error', e.message);
+                logger.warn('Retweet check failed', e.message);
             }
 
             let earned = 0;
@@ -79,20 +85,20 @@ export default {
                 details.push(`💬 Replied (+${raid.pointsReply})`);
             }
             if (hasRetweeted) {
-                earned += Number(raid.pointsRetweet) || 0;
-                details.push(`🔁 Retweeted (+${raid.pointsRetweet})`);
+                earned += Number(raid.pointsRetweet || raid.pointsLike) || 0;
+                details.push(`🔁 Retweeted (+${raid.pointsRetweet || raid.pointsLike})`);
             }
 
             if (earned === 0) {
                 return InteractionHelper.safeEditReply(interaction, {
                     embeds: [errorEmbed(
                         'No Engagement Found',
-                        `I could not find your Reply or Retweet.\n\nPlease:\n• Reply to the tweet\n• Retweet the tweet\n\nWait 20 seconds then try again.`
+                        `Could not find your Reply or Retweet.\n\nPlease make sure you:\n• Replied to the tweet\n• Retweeted the tweet\n\nWait 20-30 seconds then try again.`
                     )]
                 });
             }
 
-            // Give points
+            // Success
             await client.db.set(alreadyKey, { replied: hasReplied, retweeted: hasRetweeted, points: earned });
 
             const totalKey = `points_${userId}`;
@@ -109,8 +115,8 @@ export default {
             await InteractionHelper.safeEditReply(interaction, {
                 embeds: [
                     successEmbed(
-                        '✅ Verified!',
-                        `${details.join('\n')}\n\n**Earned: ${earned} points**\nX: **@${username}**\nTotal: **${total}**`
+                        '✅ Verified with twitterapi.io!',
+                        `${details.join('\n')}\n\n**Earned: ${earned} points**\nX: **@${username}**\nTotal Points: **${total}**`
                     )
                 ]
             });
@@ -120,7 +126,7 @@ export default {
         } catch (error) {
             logger.error('Verify error:', error);
             await InteractionHelper.safeEditReply(interaction, {
-                embeds: [errorEmbed('Error', 'Something went wrong. Try again.')]
+                embeds: [errorEmbed('Error', 'Something went wrong. Please try again.')]
             });
         }
     }
