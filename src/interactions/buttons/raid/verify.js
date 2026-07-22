@@ -15,7 +15,6 @@ export default {
         const guildId = interaction.guild.id;
 
         try {
-            // Get raid
             let raid = await client.db.get(`raids:${raidId}`) || await client.db.get(`guild:${guildId}:raids:${raidId}`);
             if (!raid) {
                 return InteractionHelper.safeEditReply(interaction, {
@@ -23,19 +22,16 @@ export default {
                 });
             }
 
-            // Get real OAuth linked account
             let linkData = await client.db.get(`xlink:${userId}`) || await client.db.get(`guild:${guildId}:xlink:${userId}`);
-            
             if (!linkData || !linkData.xUsername) {
                 return InteractionHelper.safeEditReply(interaction, {
-                    embeds: [errorEmbed('X Not Linked', 'Please run `/link-x` and authorize your X account first.')]
+                    embeds: [errorEmbed('X Not Linked', 'Please run `/link-x` and authorize first.')]
                 });
             }
 
-            const username = linkData.xUsername.toLowerCase();
-
-            // Already verified?
+            const username = linkData.xUsername.toLowerCase().replace('@', '');
             const alreadyKey = `eng:${raidId}:${userId}`;
+            
             if (await client.db.get(alreadyKey)) {
                 return InteractionHelper.safeEditReply(interaction, {
                     embeds: [errorEmbed('Already Verified', 'You already claimed points for this raid.')]
@@ -49,34 +45,64 @@ export default {
                 });
             }
 
-            // ========== CHECK WITH TWITTERAPI.IO ==========
             let hasReplied = false;
             let hasRetweeted = false;
+            let debugMessages = [];
 
-            // Check Reply
+            // ===== METHOD 1: Check user's recent tweets =====
             try {
-                const q = `conversation_id:${tweetId} from:${username}`;
-                const res = await fetch(`${BASE}/twitter/tweet/advanced_search?query=${encodeURIComponent(q)}&queryType=Latest`, {
+                const userTweetsRes = await fetch(`${BASE}/twitter/user/last_tweets?userName=${username}&limit=20`, {
+                    headers: { 'x-api-key': API_KEY }
+                });
+                const userTweetsData = await userTweetsRes.json();
+                debugMessages.push(`User tweets status: ${userTweetsRes.status}`);
+
+                if (userTweetsData.tweets && Array.isArray(userTweetsData.tweets)) {
+                    for (const t of userTweetsData.tweets) {
+                        // Check reply
+                        if (t.inReplyToStatusId === tweetId || t.conversationId === tweetId || (t.text && t.text.includes(tweetId))) {
+                            hasReplied = true;
+                        }
+                        // Check retweet
+                        if (t.retweetedTweet && (t.retweetedTweet.id === tweetId || t.retweeted_status?.id_str === tweetId)) {
+                            hasRetweeted = true;
+                        }
+                        if (t.isRetweet && t.text && t.text.includes(tweetId)) {
+                            hasRetweeted = true;
+                        }
+                    }
+                }
+            } catch (e) {
+                debugMessages.push(`User tweets error: ${e.message}`);
+            }
+
+            // ===== METHOD 2: Advanced search for reply =====
+            try {
+                const replyQuery = `from:${username} conversation_id:${tweetId}`;
+                const res = await fetch(`${BASE}/twitter/tweet/advanced_search?query=${encodeURIComponent(replyQuery)}&queryType=Latest`, {
                     headers: { 'x-api-key': API_KEY }
                 });
                 const data = await res.json();
+                debugMessages.push(`Reply search status: ${res.status}`);
                 if (data.tweets && data.tweets.length > 0) hasReplied = true;
             } catch (e) {
-                logger.warn('Reply check failed', e.message);
+                debugMessages.push(`Reply search error: ${e.message}`);
             }
 
-            // Check Retweet
+            // ===== METHOD 3: Search for retweet =====
             try {
-                const q = `retweets_of_tweet_id:${tweetId} from:${username}`;
-                const res = await fetch(`${BASE}/twitter/tweet/advanced_search?query=${encodeURIComponent(q)}&queryType=Latest`, {
+                const rtQuery = `from:${username} retweets_of:${tweetId}`;
+                const res = await fetch(`${BASE}/twitter/tweet/advanced_search?query=${encodeURIComponent(rtQuery)}&queryType=Latest`, {
                     headers: { 'x-api-key': API_KEY }
                 });
                 const data = await res.json();
+                debugMessages.push(`Retweet search status: ${res.status}`);
                 if (data.tweets && data.tweets.length > 0) hasRetweeted = true;
             } catch (e) {
-                logger.warn('Retweet check failed', e.message);
+                debugMessages.push(`Retweet search error: ${e.message}`);
             }
 
+            // Result
             let earned = 0;
             let details = [];
 
@@ -92,15 +118,16 @@ export default {
             if (earned === 0) {
                 return InteractionHelper.safeEditReply(interaction, {
                     embeds: [errorEmbed(
-                        'No Engagement Found',
-                        `Could not find your Reply or Retweet.\n\nPlease make sure you:\n• Replied to the tweet\n• Retweeted the tweet\n\nWait 20-30 seconds then try again.`
+                        'No Engagement Detected',
+                        `Still could not find your Reply or Retweet.\n\n` +
+                        `**Debug Info:**\n\`\`\`${debugMessages.join('\n')}\`\`\`\n\n` +
+                        `Make sure you used the exact linked account (@${username}) and wait 30-60 seconds after engaging.`
                     )]
                 });
             }
 
             // Success
             await client.db.set(alreadyKey, { replied: hasReplied, retweeted: hasRetweeted, points: earned });
-
             const totalKey = `points_${userId}`;
             let total = Number(await client.db.get(totalKey, 0)) + earned;
             await client.db.set(totalKey, total);
@@ -115,8 +142,8 @@ export default {
             await InteractionHelper.safeEditReply(interaction, {
                 embeds: [
                     successEmbed(
-                        '✅ Verified with twitterapi.io!',
-                        `${details.join('\n')}\n\n**Earned: ${earned} points**\nX: **@${username}**\nTotal Points: **${total}**`
+                        '✅ Verified!',
+                        `${details.join('\n')}\n\n**Earned: ${earned} points**\nX: **@${username}**\nTotal: **${total}**`
                     )
                 ]
             });
@@ -126,7 +153,7 @@ export default {
         } catch (error) {
             logger.error('Verify error:', error);
             await InteractionHelper.safeEditReply(interaction, {
-                embeds: [errorEmbed('Error', 'Something went wrong. Please try again.')]
+                embeds: [errorEmbed('Error', 'Something went wrong. Try again.')]
             });
         }
     }
