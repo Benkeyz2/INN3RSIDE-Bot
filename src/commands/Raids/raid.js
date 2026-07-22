@@ -11,33 +11,11 @@ export default {
         .setName('raid')
         .setDescription('Start an X engagement raid')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addStringOption(opt => 
-            opt.setName('tweet_url')
-                .setDescription('Full X post link')
-                .setRequired(true)
-        )
-        .addIntegerOption(opt => 
-            opt.setName('points_like')
-                .setDescription('Points for Like')
-                .setRequired(true)
-                .setMinValue(1)
-        )
-        .addIntegerOption(opt => 
-            opt.setName('points_reply')
-                .setDescription('Points for Reply')
-                .setRequired(true)
-                .setMinValue(1)
-        )
-        .addStringOption(opt => 
-            opt.setName('duration')
-                .setDescription('Example: 1h, 6h, 1d, 3d')
-                .setRequired(true)
-        )
-        .addRoleOption(opt => 
-            opt.setName('reward_role')
-                .setDescription('Role reward (optional)')
-                .setRequired(false)
-        ),
+        .addStringOption(opt => opt.setName('tweet_url').setDescription('Full X post link').setRequired(true))
+        .addIntegerOption(opt => opt.setName('points_reply').setDescription('Points for Reply').setRequired(true).setMinValue(1))
+        .addIntegerOption(opt => opt.setName('points_retweet').setDescription('Points for Retweet').setRequired(true).setMinValue(1))
+        .addStringOption(opt => opt.setName('duration').setDescription('Example: 1h, 6h, 1d, 3d').setRequired(true))
+        .addRoleOption(opt => opt.setName('reward_role').setDescription('Role reward (optional)').setRequired(false)),
 
     category: 'Raids',
 
@@ -45,8 +23,8 @@ export default {
         await InteractionHelper.safeDefer(interaction, { flags: ['Ephemeral'] });
 
         const tweetUrl = interaction.options.getString('tweet_url');
-        const pointsLike = interaction.options.getInteger('points_like');
         const pointsReply = interaction.options.getInteger('points_reply');
+        const pointsRetweet = interaction.options.getInteger('points_retweet');
         const durationRaw = interaction.options.getString('duration').toLowerCase();
         const rewardRole = interaction.options.getRole('reward_role');
 
@@ -60,36 +38,28 @@ export default {
 
         const amount = parseInt(match[1]);
         const unit = match[2];
-        let durationMs = 0;
-
-        if (unit === 'd') durationMs = amount * 86400000;
-        else if (unit === 'h') durationMs = amount * 3600000;
-        else if (unit === 'm') durationMs = amount * 60000;
+        let durationMs = unit === 'd' ? amount * 86400000 : unit === 'h' ? amount * 3600000 : amount * 60000;
 
         const endsAt = Date.now() + durationMs;
         const raidId = randomUUID();
 
         const embed = createEmbed({
-            author: {
-                name: 'inn3rside Engage',
-                iconURL: interaction.client.user.displayAvatarURL()
-            },
+            author: { name: 'inn3rside Engage', iconURL: interaction.client.user.displayAvatarURL() },
             title: '⚔️ RAID IS LIVE',
-            description: `**Engage to earn points!**\n\n1. Link your X → \`/link-x\`\n2. Like + Reply + Retweet the post\n3. Click **Verify** below after you engage\n\n📄 **Tweet:**\n${tweetUrl}`,
+            description: `**Engage to earn points!**\n\n1. Link your X → \`/link-x\`\n2. **Reply + Retweet** the post\n3. Click **Verify** below\n\n📄 **Tweet:**\n${tweetUrl}`,
             fields: [
-                { name: '❤️ Like', value: `${pointsLike} pts`, inline: true },
                 { name: '💬 Reply', value: `${pointsReply} pts`, inline: true },
+                { name: '🔁 Retweet', value: `${pointsRetweet} pts`, inline: true },
                 { name: '⏰ Ends', value: `<t:${Math.floor(endsAt / 1000)}:R>`, inline: true },
                 { name: '🎁 Role Reward', value: rewardRole ? `${rewardRole}` : 'None', inline: false }
             ],
-            footer: { text: `Started by ${interaction.user.username} • Only linked members can earn` },
+            footer: { text: `Started by ${interaction.user.username}` },
             timestamp: true,
             color: 0x1DA1F2
         });
 
         const row1 = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setLabel('Retweet').setStyle(ButtonStyle.Link).setURL(tweetUrl).setEmoji('🔁'),
-            new ButtonBuilder().setLabel('Like').setStyle(ButtonStyle.Link).setURL(tweetUrl).setEmoji('❤️'),
             new ButtonBuilder().setLabel('Reply').setStyle(ButtonStyle.Link).setURL(tweetUrl).setEmoji('💬')
         );
 
@@ -101,10 +71,7 @@ export default {
                 .setEmoji('✅')
         );
 
-        const msg = await interaction.channel.send({
-            embeds: [embed],
-            components: [row1, row2]
-        });
+        const msg = await interaction.channel.send({ embeds: [embed], components: [row1, row2] });
 
         const raidData = {
             raidId,
@@ -112,8 +79,8 @@ export default {
             messageId: msg.id,
             channelId: msg.channel.id,
             guildId: interaction.guild.id,
-            pointsLike,
             pointsReply,
+            pointsRetweet,
             endsAt,
             rewardRoleId: rewardRole?.id || null,
             active: true,
@@ -124,7 +91,7 @@ export default {
         await interaction.client.db.set(`guild:${interaction.guild.id}:raids:${raidId}`, raidData);
 
         await InteractionHelper.safeEditReply(interaction, {
-            embeds: [successEmbed('Raid Started!', `Raid is live!\nEnds: <t:${Math.floor(endsAt / 1000)}:R>`)]
+            embeds: [successEmbed('Raid Started!', `Raid is now live!\nEnds: <t:${Math.floor(endsAt / 1000)}:R>`)]
         });
 
         logger.info(`Raid started: ${raidId}`);
